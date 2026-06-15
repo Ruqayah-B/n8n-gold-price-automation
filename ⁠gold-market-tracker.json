@@ -1,0 +1,387 @@
+{
+  "name": "gold-price-automation",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst ksaHour = (now.getUTCHours() + 3) % 24; \nconst day = now.getDay(); \n\nlet marketStatus = \"open\";\n\n\nif (day === 6 || day === 0) {\n    marketStatus = \"weekend_closed\";\n} \n\nelse if (ksaHour >= 1 && ksaHour < 2) {\n    marketStatus = \"daily_closed\";\n}\n\n\nreturn { \n    marketStatus: marketStatus, \n    ksaHour: ksaHour, \n    day: day \n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        -144
+      ],
+      "id": "d14d3753-e943-4d2e-861e-0ae1efe77975",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst ksaHour = (now.getUTCHours() + 3) % 24; \nconst day = now.getDay(); \n\n\nconst forceOpen = true; \n\nlet marketStatus = \"open\";\n\nif (!forceOpen) {\n    if (day === 6 || day === 0) {\n        marketStatus = \"weekend_closed\";\n    } else if (ksaHour >= 1 && ksaHour < 2) {\n        marketStatus = \"daily_closed\";\n    }\n}\n\nreturn { \n    marketStatus: marketStatus,\n    shouldSend: true \n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        -144
+      ],
+      "id": "89ce5b76-81c3-41a5-92be-7babe45df5b4",
+      "name": "marketStatus"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "74f9d8ca-49d6-432b-bc64-1ff6aed4730c",
+              "leftValue": "={{ $json.marketStatus }}",
+              "rightValue": "open",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -224,
+        -144
+      ],
+      "id": "c4decd2d-7bdc-4862-a02f-7b26cec17da6",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "url": "https://www.goldapi.io/api/XAU/SAR",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-access-token",
+              "value": "YOUR_GOLDAPI_TOKEN_HERE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        16,
+        -224
+      ],
+      "id": "bb614f09-8e89-47a1-9f7f-18a7434eefc1",
+      "name": "Get Gold Prices"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Retrieve persistent workflow data for state tracking\nconst staticData = $getWorkflowStaticData('global');\n\nconst keys = ['max24', 'min24', 'max22', 'min22', 'max21', 'min21', 'max18', 'min18'];\nkeys.forEach(key => {\n    if (!staticData[key]) staticData[key] = key.includes('min') ? 9999 : 0;\n});\nif (!staticData.yesterdayClose24) staticData.yesterdayClose24 = 0;\n\n// 2. Extract and validate input data\nconst items = $input.all();\nif (!items || items.length === 0 || !items[0].json.price_gram_24k) {\n    throw new Error(\"Invalid or empty data received from API.\");\n}\n\nconst data = items[0].json;\nconst prices = {\n    \"24\": parseFloat(data.price_gram_24k),\n    \"22\": parseFloat(data.price_gram_22k),\n    \"21\": parseFloat(data.price_gram_21k),\n    \"18\": parseFloat(data.price_gram_18k)\n};\n\n// 3. Update rolling maximum/minimum (With Zero-Check protection)\nObject.keys(prices).forEach(karat => {\n    const p = prices[karat];\n    if (p > 0) { \n        if (p > staticData['max' + karat]) staticData['max' + karat] = p;\n        if (p < staticData['min' + karat]) staticData['min' + karat] = p;\n    }\n});\n\n// 4. Time and Status\nconst openTime = data.open_time || Math.floor(Date.now() / 1000);\nconst dateObj = new Date(openTime * 1000);\nconst ksaHour = (dateObj.getUTCHours() + 3) % 24;\n\nif (staticData.yesterdayClose24 === 0 && prices[\"24\"] > 0) staticData.yesterdayClose24 = prices[\"24\"];\nconst status = prices[\"24\"] >= staticData.yesterdayClose24 ? \"Bullish ð¢\" : \"Bearish ð´\";\n\n// 5. Output Logic\nif (ksaHour === 23) {\n    // End of day: prepare summary and reset\n    const summary = { type: \"summary\" };\n    keys.forEach(k => summary[k] = staticData[k].toFixed(2));\n    keys.forEach(k => staticData[k] = k.includes('min') ? 9999 : 0);\n    return [{ json: summary }];\n} else {\n    // Live update: return prices + current rolling max/min stats\n    return [{\n        json: {\n            type: \"live\",\n            price24: prices[\"24\"].toFixed(2),\n            price22: prices[\"22\"].toFixed(2),\n            price21: prices[\"21\"].toFixed(2),\n            price18: prices[\"18\"].toFixed(2),\n            // ÙÙØ±Ø± Ø§ÙÙ max/min Ø§ÙØ­Ø§ÙÙØ© ÙÙØ§ ÙØ¶ÙØ§Ù Ø¹Ø¯Ù Ø¸ÙÙØ± Ø§ÙÙØ±Ø§ØºØ§Øª ÙÙ Ø§ÙØ±Ø³Ø§ÙØ©\n            max24: staticData.max24.toFixed(2), min24: staticData.min24.toFixed(2),\n            max22: staticData.max22.toFixed(2), min22: staticData.min22.toFixed(2),\n            max21: staticData.max21.toFixed(2), min21: staticData.min21.toFixed(2),\n            max18: staticData.max18.toFixed(2), min18: staticData.min18.toFixed(2),\n            time: dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),\n            status: status\n        }\n    }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        -144
+      ],
+      "id": "29b272ac-3821-41a2-be03-5162b570ec02",
+      "name": "Analyze & Logic"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6da3437a-7f57-4d91-aa14-28fe4a9808ea",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "255f6277-ae61-44dd-b873-021e94e14c72",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        400,
+        -144
+      ],
+      "id": "8d74a36d-f08e-483a-8818-4061e4bb19b0",
+      "name": "Check if End of Day"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gate.whapi.cloud/messages/text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "YOUR_GOLDAPI_TOKEN_HERE"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "â  YOUR_GOLDAPI_TOKEN_HEREâ "
+            },
+            {
+              "name": "body",
+              "value": "=âï¸ *Daily Gold Close* âï¸\n\nð¥24K: â¬ï¸ {{ $json.max24 }} | â¬ï¸ {{ $json.min24 }}\nð¥22K: â¬ï¸ {{ $json.max22 }} | â¬ï¸ {{ $json.min22 }}\nð¥21K: â¬ï¸ {{ $json.max21 }} | â¬ï¸ {{ $json.min21 }}\nð18K: â¬ï¸ {{ $json.max18 }} | â¬ï¸ {{ $json.min18 }}\n\n( gram / SAR )\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        -272
+      ],
+      "id": "e89c2736-2a51-4c6d-a315-6ab58294eb10",
+      "name": "WhatsApp Summary"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gate.whapi.cloud/messages/text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "YOUR_GOLDAPI_TOKEN_HERE"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "YOUR_GOLDAPI_TOKEN_HEREâ "
+            },
+            {
+              "name": "body",
+              "value": "=â¨ Gold Market Update\n-----------------------\nð° 24K: {{ $json.price24 }} SAR\nð° 22K: {{ $json.price22 }} SAR\nð° 21K: {{ $json.price21 }} SAR\nð° 18K: {{ $json.price18 }} SAR\n\nð Market: {{ $json.status }}\nPrices are per gram in Saudi Riyal.\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "884e6ece-fc93-4530-9578-021a45fbfaab",
+      "name": "WhatsApp Live"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -864,
+        -144
+      ],
+      "id": "f768c5db-2da8-4f8e-a71d-dcd3ae66dd05",
+      "name": "Schedule Trigger1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gate.whapi.cloud/messages/text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "â  â  YOUR_GOLDAPI_TOKEN_HERE"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "YOUR_GOLDAPI_TOKEN_HEREâ "
+            },
+            {
+              "name": "body",
+              "value": "=âï¸ Gold Market Notice âï¸\nThe market is closed for now. Weâll update you as soon as trading resumes!\nThanks for being with us. âï¸"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        16,
+        -48
+      ],
+      "id": "37b9588a-7cf5-4d4c-bfae-804b31448269",
+      "name": "WhatsApp when it's closed"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "marketStatus": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Get Gold Prices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WhatsApp when it's closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Gold Prices": {
+      "main": [
+        [
+          {
+            "node": "Analyze & Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze & Logic": {
+      "main": [
+        [
+          {
+            "node": "Check if End of Day",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if End of Day": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WhatsApp Live",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp Live": {
+      "main": [
+        []
+      ]
+    },
+    "Schedule Trigger1": {
+      "main": [
+        [
+          {
+            "node": "marketStatus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "cfd93c1d-2426-4dd1-93f7-50d9c49d7623",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": ""
+  },
+  "nodeGroups": [],
+  "id": "dkjd73c1vYEDafwR",
+  "tags": []
+}
